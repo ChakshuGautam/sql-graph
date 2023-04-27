@@ -1,0 +1,8 @@
+{
+    "python.envFile": "${workspaceRoot}/.env",
+    "python.defaultInterpreterPath": "venv/bin/python",
+    "editor.snippetSuggestions": "none",
+    "python.linting.pylintEnabled": true,
+    "python.linting.mypyEnabled": true,
+    "python.formatting.provider": "autopep8"
+  }

@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "sql-graph"
+version = "0.1.0"
+description = ""
+authors = ["ChakshuGautam <chaks.gautam@gmail.com>"]
+readme = "README.md"
+packages = [{include = "sql_graph"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+networkx = "^3.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
