@@ -9,3 +9,14 @@ Use Cases
 - [ ] Supporting multiple SQL flavours.
 
 [![Open in Gitpod](https://gitpod.io/button/open-in-gitpod.svg)](https://gitpod.io/#https://github.com/ChakshuGautam/sql-graph)
+
+
+## Installation
+
+Step 1: 
+```bash
+poetry install
+```
+
+Step 2: 
+Install Graphviz

@@ -1,7 +1,9 @@
 {
     "recommendations": [
-		"ms-python.python",
-        "ms-python.black-formatter",
-        "KevinRose.vsc-python-indent"
+      "ms-python.python",
+      "ms-python.black-formatter",
+      "KevinRose.vsc-python-indent",
+      "joaompinto.vscode-graphviz",
+      "ms-python.pylint"
 	]
 }
