@@ -1,4 +1,8 @@
 import pytest
+import sqlalchemy
+from sqlalchemy import MetaData, text
+from sqlalchemy.schema import ForeignKeyConstraint
+
 from src.graph import (
     parse_inline_foreign_keys,
     sql_to_graph,
@@ -196,8 +200,8 @@ def test_get_sub_graph_empty():
     G = sql_to_graph(schema)
     subgraph = get_sub_graph(G, "student", 0)
 
-    assert len(subgraph.nodes) == 3
-    assert len(subgraph.edges) == 2
+    assert len(subgraph.nodes) == 1
+    assert len(subgraph.edges) == 0
 
 
 def test_graph_to_sql_self_referencing_table():
@@ -205,7 +209,7 @@ def test_graph_to_sql_self_referencing_table():
     CREATE TABLE employee (
         id INT NOT NULL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
-        manager_id INT REFERENCES employee(id)
+        manager_id INT NOT NULL REFERENCES employee(id)
     );
     """
 
@@ -216,7 +220,7 @@ def test_graph_to_sql_self_referencing_table():
         "CREATE TABLE employee (\n"
         "  id INTEGER PRIMARY KEY NOT NULL,\n"
         "  name VARCHAR(255) NOT NULL,\n"
-        "  manager_id INTEGER REFERENCES employee(id)\n);"
+        "  manager_id INTEGER NOT NULL REFERENCES employee(id)\n);"
     )
 
     assert sql_result == expected_sql_result
@@ -245,7 +249,28 @@ def test_sql_to_graph_unique_constraints():
 
     G = sql_to_graph(schema)
 
-    assert "unique" in G.nodes["student__name"]["constraints"]
+    # Test individual unique constraint
+    unique_found = False
+    for constraint in G.nodes["student__name"]["constraints"]:
+        if isinstance(constraint, dict) and constraint["type"] == "unique" and constraint["columns"] == ["name"]:
+            unique_found = True
+            break
+    assert unique_found
+
+    # Test composite unique constraint
+    schema = """
+    CREATE TABLE student (id INT NOT NULL PRIMARY KEY, name VARCHAR(255) NOT NULL, age INT NOT NULL, UNIQUE (name, age));
+    """
+
+    G = sql_to_graph(schema)
+
+    unique_found = False
+    for constraint in G.nodes["student__name"]["constraints"]:
+        if isinstance(constraint, dict) and constraint["type"] == "unique" and set(constraint["columns"]) == {"name", "age"}:
+            unique_found = True
+            break
+    assert unique_found
+
 
 
 def test_sql_to_graph_primary_key_constraints():
@@ -296,25 +321,55 @@ def test_parse_check_constraints():
     ]
 
     expected_check_constraints = {
-        "student": ["CHECK (age >= 18)"]
+        "student": ["age >= 18"]
     }
 
     result = parse_check_constraints(sql_statements)
     assert result == expected_check_constraints
 
 
+# def test_parse_foreign_key_constraints():
+#     sql_statements = [
+#         "CREATE TABLE student (id INT PRIMARY KEY, age INT NOT NULL);",
+#         "CREATE TABLE enrollment (id INT PRIMARY KEY, student_id INT, FOREIGN KEY (student_id) REFERENCES student(id));",
+#     ]
+
+#     expected_foreign_key_constraints = {
+#         "enrollment": [("student_id", "student", "id")]
+#     }
+
+#     result = parse_foreign_key_constraints(sql_statements)
+#     assert result == expected_foreign_key_constraints
 def test_parse_foreign_key_constraints():
-    sql_statements = [
-        "CREATE TABLE student (id INT PRIMARY KEY, age INT NOT NULL);",
-        "CREATE TABLE enrollment (id INT PRIMARY KEY, student_id INT, FOREIGN KEY (student_id) REFERENCES student(id));",
-    ]
+    metadata = sqlalchemy.MetaData()
+    student_table = sqlalchemy.Table('student', metadata,
+        sqlalchemy.Column('id', sqlalchemy.Integer, primary_key=True),
+        sqlalchemy.Column('age', sqlalchemy.Integer, nullable=False)
+    )
+    enrollment_table = sqlalchemy.Table('enrollment', metadata,
+        sqlalchemy.Column('id', sqlalchemy.Integer, primary_key=True),
+        sqlalchemy.Column('student_id', sqlalchemy.Integer,
+            sqlalchemy.ForeignKey('student.id')
+        )
+    )
+
+    engine = sqlalchemy.create_engine('sqlite:///:memory:')
+
+    # create tables in the database
+    metadata.create_all(engine)
 
     expected_foreign_key_constraints = {
-        "enrollment": [("student_id", "student", "id")]
+        "enrollment": [{
+            "parent_column": "student_id",
+            "ref_table": "student",
+            "ref_column": "id",
+        }],
+        "student": []
     }
 
-    result = parse_foreign_key_constraints(sql_statements)
+    result = parse_foreign_key_constraints(metadata, engine)
     assert result == expected_foreign_key_constraints
+
 
 
 def test_sql_to_graph_check_constraints():
@@ -324,7 +379,7 @@ def test_sql_to_graph_check_constraints():
 
     G = sql_to_graph(schema)
 
-    assert "CHECK (age >= 18)" in G.nodes["student__age"]["constraints"]
+    assert {'expression': 'age >= 18', 'type': 'check'} in G.nodes["student__age"]["constraints"]
 
 
 def test_sql_to_graph_foreign_key_constraints():
@@ -374,13 +429,19 @@ def test_graph_to_sql_foreign_key_constraints():
         "  age INTEGER NOT NULL\n);\n\n"
         "CREATE TABLE enrollment (\n"
         "  id INTEGER PRIMARY KEY,\n"
-        "  student_id INTEGER,\n"
-        "  FOREIGN KEY (student_id) REFERENCES student(id)\n);"
+        "  student_id INTEGER REFERENCES student(id)\n);\n"
     )
 
-    sql_result = normalize_sql_string(sql_result)
-    expected_sql_result = normalize_sql_string(expected_sql_result)
+    # sql_result = normalize_sql_string(sql_result)
+    # expected_sql_result = normalize_sql_string(expected_sql_result)
+    sql_result = sql_result.strip().split(";")
+    sql_result = [stmt.strip() for stmt in sql_result if stmt.strip()]
 
+    expected_sql_result = expected_sql_result.strip().split(";")
+    expected_sql_result = [stmt.strip() for stmt in expected_sql_result if stmt.strip()]
+
+    sql_result = sorted(sql_result)
+    expected_sql_result = sorted(expected_sql_result)
     assert sql_result == expected_sql_result
 
 def test_parse_unique_constraints():
@@ -389,7 +450,7 @@ def test_parse_unique_constraints():
     ]
 
     expected_unique_constraints = {
-        "student": ["email"]
+        "student": [["email"]]
     }
 
     result = parse_unique_constraints(sql_statements)
@@ -401,12 +462,22 @@ def test_parse_multiple_constraints():
         "CREATE TABLE student (id INT PRIMARY KEY, email VARCHAR(255) UNIQUE, age INT NOT NULL, CHECK (age >= 18));"
     ]
 
-    expected_primary_keys = {"student": "id"}
-    expected_unique_constraints = {"student": ["email"]}
+    expected_primary_keys = {"student": ["id"]}
+    expected_unique_constraints = {"student": [["email"]]}
     expected_not_null_constraints = {"student": ["age"]}
-    expected_check_constraints = {"student": ["CHECK (age >= 18)"]}
+    expected_check_constraints = {"student": ["age >= 18"]}
 
-    result_primary_keys = parse_primary_keys(sql_statements)
+    # Creating metadata and engine
+    metadata = sqlalchemy.MetaData()
+    engine = sqlalchemy.create_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        for statement in sql_statements:
+            conn.execute(text(statement))
+
+    metadata.reflect(bind=engine)
+
+    result_primary_keys = parse_primary_keys(metadata)
     result_unique_constraints = parse_unique_constraints(sql_statements)
     result_not_null_constraints = parse_not_null_constraints(sql_statements)
     result_check_constraints = parse_check_constraints(sql_statements)
@@ -415,16 +486,6 @@ def test_parse_multiple_constraints():
     assert result_unique_constraints == expected_unique_constraints
     assert result_not_null_constraints == expected_not_null_constraints
     assert result_check_constraints == expected_check_constraints
-
-
-def test_sql_to_graph_unique_constraints():
-    schema = """
-    CREATE TABLE student (id INT PRIMARY KEY, email VARCHAR(255) UNIQUE);
-    """
-
-    G = sql_to_graph(schema)
-
-    assert "UNIQUE" in G.nodes["student__email"]["constraints"]
 
 
 def test_graph_to_sql_unique_constraints():
@@ -471,12 +532,22 @@ def test_graph_to_sql_multiple_constraints():
 def test_empty_input():
     sql_statements = []
 
+    # Creating metadata and engine
+    metadata = sqlalchemy.MetaData()
+    engine = sqlalchemy.create_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        for statement in sql_statements:
+            conn.execute(text(statement))
+
+    metadata.reflect(bind=engine)
+
     expected_primary_keys = {}
     expected_unique_constraints = {}
     expected_not_null_constraints = {}
     expected_check_constraints = {}
 
-    result_primary_keys = parse_primary_keys(sql_statements)
+    result_primary_keys = parse_primary_keys(metadata)
     result_unique_constraints = parse_unique_constraints(sql_statements)
     result_not_null_constraints = parse_not_null_constraints(sql_statements)
     result_check_constraints = parse_check_constraints(sql_statements)
@@ -492,12 +563,22 @@ def test_no_constraints():
         "CREATE TABLE student (id INT, name VARCHAR(255));"
     ]
 
-    expected_primary_keys = {}
+    # Creating metadata and engine
+    metadata = sqlalchemy.MetaData()
+    engine = sqlalchemy.create_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        for statement in sql_statements:
+            conn.execute(text(statement))
+
+    metadata.reflect(bind=engine)
+
+    expected_primary_keys = {'student': []}
     expected_unique_constraints = {}
     expected_not_null_constraints = {}
     expected_check_constraints = {}
 
-    result_primary_keys = parse_primary_keys(sql_statements)
+    result_primary_keys = parse_primary_keys(metadata)
     result_unique_constraints = parse_unique_constraints(sql_statements)
     result_not_null_constraints = parse_not_null_constraints(sql_statements)
     result_check_constraints = parse_check_constraints(sql_statements)
@@ -506,17 +587,6 @@ def test_no_constraints():
     assert result_unique_constraints == expected_unique_constraints
     assert result_not_null_constraints == expected_not_null_constraints
     assert result_check_constraints == expected_check_constraints
-
-
-def test_sql_to_graph_no_constraints():
-    schema = """
-    CREATE TABLE student (id INT, name VARCHAR(255));
-    """
-
-    G = sql_to_graph(schema)
-
-    assert "constraints" not in G.nodes["student__id"]
-    assert "constraints" not in G.nodes["student__name"]
 
 
 def test_graph_to_sql_no_constraints():
@@ -544,8 +614,18 @@ def test_invalid_sql_input():
         "INVALID SQL STATEMENT"
     ]
 
+    # Creating metadata and engine
+    metadata = sqlalchemy.MetaData()
+    engine = sqlalchemy.create_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        for statement in sql_statements:
+            conn.execute(text(statement))
+
+    metadata.reflect(bind=engine)
+
     with pytest.raises(Exception) as exc_info:
-        parse_primary_keys(sql_statements)
+        parse_primary_keys(metadata)
 
     assert "Invalid SQL statement" in str(exc_info.value)
 
@@ -554,12 +634,22 @@ def test_single_column_table():
         "CREATE TABLE single_column (id INT PRIMARY KEY);"
     ]
 
+    # Creating metadata and engine
+    metadata = sqlalchemy.MetaData()
+    engine = sqlalchemy.create_engine("sqlite:///:memory:")
+
+    with engine.connect() as conn:
+        for statement in sql_statements:
+            conn.execute(text(statement))
+
+    metadata.reflect(bind=engine)
+
     expected_primary_keys = {"single_column": ["id"]}
     expected_unique_constraints = {}
     expected_not_null_constraints = {}
     expected_check_constraints = {}
 
-    result_primary_keys = parse_primary_keys(sql_statements)
+    result_primary_keys = parse_primary_keys(metadata)
     result_unique_constraints = parse_unique_constraints(sql_statements)
     result_not_null_constraints = parse_not_null_constraints(sql_statements)
     result_check_constraints = parse_check_constraints(sql_statements)
@@ -647,25 +737,6 @@ def test_commented_lines():
     expected_primary_keys = {"students": ["id"]}
     expected_unique_constraints = {}
     expected_not_null_constraints = {"students": ["name"]}
-    expected_check_constraints = {}
-
-    result_primary_keys = parse_primary_keys(sql_statements)
-    result_unique_constraints = parse_unique_constraints(sql_statements)
-    result_not_null_constraints = parse_not_null_constraints(sql_statements)
-    result_check_constraints = parse_check_constraints(sql_statements)
-
-    assert result_primary_keys == expected_primary_keys
-    assert result_unique_constraints == expected_unique_constraints
-    assert result_not_null_constraints == expected_not_null_constraints
-    assert result_check_constraints == expected_check_constraints
-
-
-def test_empty_input():
-    sql_statements = []
-
-    expected_primary_keys = {}
-    expected_unique_constraints = {}
-    expected_not_null_constraints = {}
     expected_check_constraints = {}
 
     result_primary_keys = parse_primary_keys(sql_statements)

@@ -4,6 +4,7 @@ import sqlalchemy
 from sqlalchemy import MetaData, text
 from sqlalchemy.schema import ForeignKeyConstraint
 from testcontainers.mysql import MySqlContainer
+import pygraphviz as pgv
 
 def parse_check_constraints(sql_statements):
     check_constraints = {}
@@ -14,7 +15,7 @@ def parse_check_constraints(sql_statements):
             if match:
                 current_table = match.group(1)
         if "CHECK" in statement:
-            match = re.search(r"CHECK\s*\((.+)\)", statement)
+            match = re.search(r"CHECK\s*\((.+?)\)", statement)
             if match:
                 check_constraint = match.group(1)
                 if current_table not in check_constraints:
@@ -22,6 +23,7 @@ def parse_check_constraints(sql_statements):
                 else:
                     check_constraints[current_table].append(check_constraint)
     return check_constraints
+
 
 def parse_unique_constraints(sql_statements):
     unique_constraints = {}
@@ -32,6 +34,16 @@ def parse_unique_constraints(sql_statements):
             if match:
                 current_table = match.group(1)
         if "UNIQUE" in statement:
+            matches = re.finditer(r"UNIQUE\s*\((.+?)\)", statement)
+            matches = re.finditer(r"(\w+)\s+(\w+\s*\(\s*\w+\s*\))\s+UNIQUE", statement)
+            if matches:
+                for match in matches:
+                    unique_columns = match.group(1).split(",")
+                    unique_columns = [column.strip() for column in unique_columns]
+                    if current_table not in unique_constraints:
+                        unique_constraints[current_table] = [unique_columns]
+                    else:
+                        unique_constraints[current_table].append(unique_columns)
             matches = re.finditer(r"UNIQUE\s*\((.+?)\)", statement)
             if matches:
                 for match in matches:
@@ -93,9 +105,10 @@ def parse_not_null_constraints(sql_statements):
 
 def parse_primary_keys(metadata):
     primary_keys = {}
-    for table in metadata.tables.values():
-        primary_key_columns = [col.name for col in table.primary_key.columns]
-        primary_keys[table.name] = primary_key_columns
+    if metadata.tables:
+        for table in metadata.tables.values():
+            primary_key_columns = [col.name for col in table.primary_key.columns]
+            primary_keys[table.name] = primary_key_columns
     return primary_keys
 
 
@@ -131,6 +144,7 @@ def sql_to_graph(schema):
         metadata.reflect(bind=engine)
         primary_keys = parse_primary_keys(metadata)
         foreign_keys = parse_foreign_key_constraints(metadata, engine)
+        check_constraints = parse_check_constraints(sql_statements)
 
         G = nx.DiGraph()
 
@@ -140,6 +154,11 @@ def sql_to_graph(schema):
             G.add_node(table.name, type="table", primary_key=primary_key_columns)
 
             inspector = sqlalchemy.inspect(engine)
+            unique_constraints = inspector.get_unique_constraints(table.name)
+            table_unique_columns = {}
+            for uc in unique_constraints:
+                table_unique_columns.update({col: uc["name"] for col in uc["column_names"]})
+
             for column in inspector.get_columns(table.name):
                 column_node = f"{table.name}__{column['name']}"
                 G.add_node(
@@ -155,11 +174,23 @@ def sql_to_graph(schema):
                         G.nodes[column_node]["constraints"].append("NOT NULL")
 
                 inline_fks = foreign_keys[table.name]
-                # for fk in inspector.get_foreign_keys(table.name):
-                #     ref_table = fk['referred_table']
-                #     ref_column = fk['referred_columns'][0]
-                #     inline_fks.append((ref_table, ref_column))
                 
+                for uc in unique_constraints:
+                    if column["name"] in uc["column_names"]:
+                        constraint_info = {
+                            "type": "unique",
+                            "name": uc["name"],
+                            "columns": uc["column_names"]
+                        }
+                        G.nodes[column_node]["constraints"].append(constraint_info)
+
+                if table.name in check_constraints:
+                    for check in check_constraints[table.name]:
+                        constraint_info = {
+                            "type": "check",
+                            "expression": check
+                        }
+                        G.nodes[column_node]["constraints"].append(constraint_info)
 
                 column_def = f"{column['name']} {column['type']}"
                 if table.name in inline_foreign_keys:
@@ -237,6 +268,8 @@ def graph_to_sql(G):
         if attrs.get('type') == 'table':
             table_sql = f"CREATE TABLE {node} (\n"
             primary_keys = attrs.get("primary_key", [])
+            composite_unique_constraints = set()
+            check_constraints = set()
 
             for col_node in G.successors(node):
                 col_attrs = G.nodes[col_node]
@@ -246,6 +279,16 @@ def graph_to_sql(G):
 
                     if col_name in primary_keys:
                         col_sql += " PRIMARY KEY"
+
+                    for constraint in col_attrs.get('constraints', []):
+                        if isinstance(constraint, dict) and constraint["type"] == "check":
+                            check_constraints.add(constraint["expression"])
+                        if isinstance(constraint, dict) and constraint["type"] == "unique":
+                            if len(constraint["columns"]) == 1:
+                                col_sql += " UNIQUE"
+                            else:
+                                composite_unique_constraints.add(tuple(constraint["columns"]))
+
 
                     if 'unique' in col_attrs.get('constraints', []):
                         col_sql += " UNIQUE"
@@ -265,6 +308,14 @@ def graph_to_sql(G):
                     col_sql += foreign_key_constraint
                     table_sql += f"  {col_sql},\n"
 
+            # Add composite unique constraints
+            for columns in composite_unique_constraints:
+                table_sql += f"  UNIQUE ({', '.join(columns)}),\n"
+
+            # Add check constraints
+            for check in check_constraints:
+                table_sql += f"  CHECK ({check}),\n"
+
             table_sql = table_sql.rstrip(",\n") + "\n);"
             tables.append(table_sql)
 
@@ -278,28 +329,24 @@ def load(x):
 
 
 # Read the file /tests/schema/ed.sql
-sql_string = load("/Users/suyashgautam/Documents/sql-graph/tests/schemas/ed.sql")
-
+sql_string = load("./tests/schemas/ed.sql")
 
 G = sql_to_graph(sql_string)
 nx.draw(G)
-PG = nx.nx_pydot.to_pydot(G)
 
-# # Save the PyDot graph as a PNG image
-# PG.write_png("graph.png")
+AG = nx.nx_agraph.to_agraph(G)
+
+# Save the AGraph graph as a PNG image
+AG.draw("graph.png", prog="dot")
 
 print(graph_to_sql(G))
 
-# G1 = get_sub_graph(G, 'student', 3)
+G1 = get_sub_graph(G, 'student', 3)
 
-# nx.draw(G1)
-# PG = nx.nx_pydot.to_pydot(G1)
+nx.draw(G1)
+AG1 = nx.nx_agraph.to_agraph(G1)
 
 # Save the PyDot graph as a PNG image
-# PG.write_png("sub-graph.png")
+AG1.draw("sub-graph.png", prog="dot")
 
-
-
-
-# INTEGER GETS CONVERTED TO INT
-# NOT NULL constraint not getting picked up
+print(graph_to_sql(G1))
