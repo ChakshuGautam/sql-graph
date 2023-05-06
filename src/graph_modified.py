@@ -297,7 +297,7 @@ def load(x):
 
 
 # Read the file /tests/schema/ed.sql
-sql_string = load("./tests/schemas/ed.sql")
+sql_string = load("./tests/schemas/test.sql")
 
 G = sql_to_graph(sql_string)
 nx.draw(G)

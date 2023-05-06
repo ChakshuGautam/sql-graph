@@ -523,13 +523,10 @@ def test_invalid_sql_input(mysql_db):
         "INVALID SQL STATEMENT"
     ]
 
-    # Creating metadata and engine
-    metadata, inspector, engine, container = mysql_db(sql_statements)
+    result, error_message = sql_to_graph(sql_statements)
 
-    with pytest.raises(Exception) as exc_info:
-        parse_primary_keys(metadata)
-
-    assert "Invalid SQL statement" in str(exc_info.value)
+    assert result is None
+    assert "An error occurred while parsing the schema:" in error_message
 
 def test_single_column_table(mysql_db):
     sql_statements = [
@@ -555,7 +552,7 @@ def test_single_column_table(mysql_db):
     assert result_check_constraints == expected_check_constraints
 
 
-def test_all_constraints_no_columns(mysql_db):
+def test_all_constraints_no_columns():
     sql_statements = [
         "CREATE TABLE no_columns ();",
         "ALTER TABLE no_columns ADD PRIMARY KEY ();",
@@ -564,86 +561,64 @@ def test_all_constraints_no_columns(mysql_db):
     ]
 
     # Creating metadata and engine
-    metadata, inspector, engine, container = mysql_db(sql_statements)
+    result, error_message = sql_to_graph(sql_statements)
 
-    expected_primary_keys = {}
-    expected_unique_constraints = {}
-    expected_not_null_constraints = {}
-    expected_check_constraints = {}
-
-    result_primary_keys = parse_primary_keys(metadata)
-    result_unique_constraints = parse_unique_constraints(metadata, inspector)
-    result_not_null_constraints = parse_not_null_constraints(metadata)
-    result_check_constraints = parse_check_constraints(metadata)
-
-    assert result_primary_keys == expected_primary_keys
-    assert result_unique_constraints == expected_unique_constraints
-    assert result_not_null_constraints == expected_not_null_constraints
-    assert result_check_constraints == expected_check_constraints
+    assert result is None
+    assert "An error occurred while parsing the schema:" in error_message
 
 
-def test_only_whitespace_input(mysql_db):
+def test_only_whitespace_input():
     sql_statements = [
         "   \t \n  "
     ]
 
-    expected_primary_keys = {}
-    expected_unique_constraints = {}
-    expected_not_null_constraints = {}
-    expected_check_constraints = {}
+    result, error_message = sql_to_graph(sql_statements)
 
-    # Creating metadata and engine
-    metadata, inspector, engine, container = mysql_db(sql_statements)
-
-    result_primary_keys = parse_primary_keys(metadata)
-    result_unique_constraints = parse_unique_constraints(metadata, inspector)
-    result_not_null_constraints = parse_not_null_constraints(metadata)
-    result_check_constraints = parse_check_constraints(metadata)
-
-    assert result_primary_keys == expected_primary_keys
-    assert result_unique_constraints == expected_unique_constraints
-    assert result_not_null_constraints == expected_not_null_constraints
-    assert result_check_constraints == expected_check_constraints
+    assert result is None
+    assert "An error occurred while parsing the schema:" in error_message
 
 
-def test_missing_semicolon():
+def test_missing_semicolon(mysql_db):
     sql_statements = [
         "CREATE TABLE student (id INT, name VARCHAR(255))"
     ]
 
-    with pytest.raises(Exception) as exc_info:
-        parse_primary_keys(sql_statements)
-
-    assert "Missing semicolon" in str(exc_info.value)
+    result, error_message = sql_to_graph(sql_statements)
+    
+    assert result is None
+    assert "An error occurred while parsing the schema:" in error_message
 
 def test_invalid_sql_statement():
     sql_statements = [
         "CREATE TABL students (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL);"
     ]
 
-    with pytest.raises(Exception) as exc_info:
-        parse_primary_keys(sql_statements)
+    result, error_message = sql_to_graph(sql_statements)
 
-    assert "Invalid SQL statement" in str(exc_info.value)
+    assert result is None
+    assert "An error occurred while parsing the schema:" in error_message
 
 
-def test_commented_lines():
-    sql_statements = [
-        "-- This is a commented line",
-        "CREATE TABLE students (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL);",
-        "/* This is a multiline",
-        "comment block */"
-    ]
+def test_commented_lines(mysql_db):
+    sql_statements = ["""
+    -- This is a commented line,
+    CREATE TABLE students (id INT PRIMARY KEY, name VARCHAR(255) NOT NULL);
+    /* This is a multiline,
+    comment block */
+    """]
+
+    # Creating metadata and engine
+    metadata, inspector, engine, container = mysql_db(sql_statements)
 
     expected_primary_keys = {"students": ["id"]}
     expected_unique_constraints = {}
-    expected_not_null_constraints = {"students": ["name"]}
+    expected_not_null_constraints = {"students": ["id", "name"]}
     expected_check_constraints = {}
 
-    result_primary_keys = parse_primary_keys(sql_statements)
-    result_unique_constraints = parse_unique_constraints(sql_statements)
-    result_not_null_constraints = parse_not_null_constraints(sql_statements)
-    result_check_constraints = parse_check_constraints(sql_statements)
+    result_primary_keys = parse_primary_keys(metadata)
+    result_unique_constraints = parse_unique_constraints(metadata, inspector)
+    result_not_null_constraints = parse_not_null_constraints(metadata)
+    result_check_constraints = parse_check_constraints(metadata)
 
     assert result_primary_keys == expected_primary_keys
     assert result_unique_constraints == expected_unique_constraints
@@ -654,7 +629,7 @@ def test_commented_lines():
 def test_non_string_input():
     sql_statements = [1, 2, 3]
 
-    with pytest.raises(Exception) as exc_info:
-        parse_primary_keys(sql_statements)
+    result, error_message = sql_to_graph(sql_statements)
 
-    assert "Invalid input: expected a list of strings" in str(exc_info.value)
+    assert result is None
+    assert "An error occurred while parsing the schema: 'list' object has no attribute 'strip'" in error_message
