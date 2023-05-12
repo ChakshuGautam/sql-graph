@@ -7,6 +7,7 @@ from testcontainers.mysql import MySqlContainer
 import pygraphviz as pgv
 from sqlalchemy import inspect
 from sqlalchemy.schema import UniqueConstraint
+import os
 
 def parse_check_constraints(metadata):
     check_constraints = {}
@@ -342,23 +343,20 @@ def graph_to_sql(G):
     return "\n\n".join(tables)
 
 
-
-
 def load(x):
     with open(x) as f:
         ret = f.read()
     return ret
 
+def save_graph(G, name, path=""):
+    nx.draw(G)
 
-# Read the file /tests/schema/ed.sql
-sql_string = load("./tests/schemas/ed.sql")
+    AG = nx.nx_agraph.to_agraph(G)
 
-G = sql_to_graph(sql_string)
-nx.draw(G)
+    # Create the directory if it doesn't exist
+    if path and not os.path.exists(path):
+        os.makedirs(path)
 
-AG = nx.nx_agraph.to_agraph(G)
-
-# Save the AGraph graph as a PNG image
-AG.draw("graph1.png", prog="dot")
-
-print(graph_to_sql(G))
+    # Save the AGraph graph as a PNG image
+    file_path = os.path.join(path, name + ".png")
+    AG.draw(file_path, prog="dot")
