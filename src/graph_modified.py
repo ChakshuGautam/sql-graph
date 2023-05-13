@@ -7,6 +7,7 @@ from testcontainers.mysql import MySqlContainer
 import pygraphviz as pgv
 from sqlalchemy import inspect
 from sqlalchemy.schema import UniqueConstraint
+import os
 
 def parse_check_constraints(metadata):
     check_constraints = {}
@@ -71,11 +72,85 @@ def parse_primary_keys(metadata):
             primary_keys[table.name] = primary_key_columns
     return primary_keys
 
-def parse_foreign_key_constraints(metadata, engine):
+# def parse_foreign_key_constraints(metadata, engine):
+#     foreign_keys = {}
+#     inspector = sqlalchemy.inspect(engine)
+#     for table in metadata.tables.values():
+#         foreign_key_list = []
+#         for fk in inspector.get_foreign_keys(table.name):
+#             ref_table = fk['referred_table']
+#             for column, ref_column in zip(fk['constrained_columns'], fk['referred_columns']):
+#                 foreign_key_list.append({
+#                     "parent_column": column,
+#                     "ref_table": ref_table,
+#                     "ref_column": ref_column,
+#                 })
+
+#         # Handle inline foreign keys with REFERENCES keyword
+#         for column in table.columns:
+#             for fk in column.foreign_keys:
+#                 ref_table = fk.column.table.name
+#                 ref_column = fk.column.name
+#                 ondelete = f"ON DELETE {fk.ondelete}" if fk.ondelete else ""
+#                 onupdate = f"ON UPDATE {fk.onupdate}" if fk.onupdate else ""
+#                 deferrable = "DEFERRABLE" if fk.deferrable else ""
+#                 initially = f"INITIALLY {fk.initially}" if fk.initially else ""
+#                 foreign_key_list.append({
+#                     "parent_column": column.name,
+#                     "ref_table": ref_table,
+#                     "ref_column": ref_column,
+#                     "ondelete": ondelete,
+#                     "onupdate": onupdate,
+#                     "deferrable": deferrable,
+#                     "initially": initially,
+#                 })
+
+#         foreign_keys[table.name] = foreign_key_list
+#     return foreign_keys
+
+def parse_inline_foreign_keys(sql_statements):
+    inline_foreign_keys = {}
+    current_table = None
+    for statement in sql_statements:
+        if "CREATE TABLE" in statement:
+            match = re.search(r"CREATE TABLE (\w+)", statement)
+            if match:
+                current_table = match.group(1)
+        if "REFERENCES" in statement and "FOREIGN KEY" not in statement:
+            matches = re.finditer(r"\b(\w+)\b\s+(\w+)(?:\((\d+)\))?\s+NOT NULL REFERENCES\s+(\w+)\s*\((\w+)\)", statement)
+            if matches:
+                for match in matches:
+                    parent_column = match.group(1)
+                    parent_datatype = match.group(2)
+                    ref_table = match.group(4)
+                    ref_column = match.group(5)
+                    inline_foreign_key = {
+                        "parent_column": parent_column,
+                        "parent_datatype": parent_datatype,
+                        "ref_table": ref_table,
+                        "ref_column": ref_column,
+                    }
+                    if current_table not in inline_foreign_keys:
+                        inline_foreign_keys[current_table] = [inline_foreign_key]
+                    else:
+                        inline_foreign_keys[current_table].append(inline_foreign_key)
+    return inline_foreign_keys
+
+def parse_foreign_key_constraints(metadata, engine, sql_statements):
     foreign_keys = {}
     inspector = sqlalchemy.inspect(engine)
+    
+    # Parse inline foreign keys
+    inline_foreign_keys = parse_inline_foreign_keys(sql_statements)
+    
     for table in metadata.tables.values():
         foreign_key_list = []
+        
+        # Add parsed inline foreign keys
+        if table.name in inline_foreign_keys:
+            foreign_key_list.extend(inline_foreign_keys[table.name])
+
+        # Add explicit foreign keys
         for fk in inspector.get_foreign_keys(table.name):
             ref_table = fk['referred_table']
             for column, ref_column in zip(fk['constrained_columns'], fk['referred_columns']):
@@ -85,28 +160,8 @@ def parse_foreign_key_constraints(metadata, engine):
                     "ref_column": ref_column,
                 })
 
-        # Handle inline foreign keys with REFERENCES keyword
-        for column in table.columns:
-            for fk in column.foreign_keys:
-                ref_table = fk.column.table.name
-                ref_column = fk.column.name
-                ondelete = f"ON DELETE {fk.ondelete}" if fk.ondelete else ""
-                onupdate = f"ON UPDATE {fk.onupdate}" if fk.onupdate else ""
-                deferrable = "DEFERRABLE" if fk.deferrable else ""
-                initially = f"INITIALLY {fk.initially}" if fk.initially else ""
-                foreign_key_list.append({
-                    "parent_column": column.name,
-                    "ref_table": ref_table,
-                    "ref_column": ref_column,
-                    "ondelete": ondelete,
-                    "onupdate": onupdate,
-                    "deferrable": deferrable,
-                    "initially": initially,
-                })
-
         foreign_keys[table.name] = foreign_key_list
     return foreign_keys
-
 
 def add_nodes_and_edges(G, table, not_null_constraints, check_constraints, unique_constraints, foreign_keys, primary_keys):
     G.add_node(table.name, type="table", primary_key=primary_keys[table.name], unique_constraints=unique_constraints.get(table.name, {}))
@@ -212,7 +267,7 @@ def sql_to_graph(schema):
             inspector = inspect(engine)
             not_null_constraints = parse_not_null_constraints(metadata)
             primary_keys = parse_primary_keys(metadata)
-            foreign_keys = parse_foreign_key_constraints(metadata, engine)
+            foreign_keys = parse_foreign_key_constraints(metadata, engine, sql_statements)
             check_constraints = parse_check_constraints(metadata)
             unique_constraints = parse_unique_constraints(metadata, inspector)
 
@@ -288,23 +343,20 @@ def graph_to_sql(G):
     return "\n\n".join(tables)
 
 
-
-
 def load(x):
     with open(x) as f:
         ret = f.read()
     return ret
 
+def save_graph(G, name, path=""):
+    nx.draw(G)
 
-# Read the file /tests/schema/ed.sql
-sql_string = load("./tests/schemas/test.sql")
+    AG = nx.nx_agraph.to_agraph(G)
 
-G = sql_to_graph(sql_string)
-nx.draw(G)
+    # Create the directory if it doesn't exist
+    if path and not os.path.exists(path):
+        os.makedirs(path)
 
-AG = nx.nx_agraph.to_agraph(G)
-
-# Save the AGraph graph as a PNG image
-AG.draw("graph1.png", prog="dot")
-
-print(graph_to_sql(G))
+    # Save the AGraph graph as a PNG image
+    file_path = os.path.join(path, name + ".png")
+    AG.draw(file_path, prog="dot")

@@ -24,8 +24,10 @@ jobs:
         run: |
           python3 -m venv venv
           source venv/bin/activate
+          sudo apt-get update && sudo apt-get install -y libgraphviz-dev
           pip install -r requirements.txt
-
+          ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/graphviz
+          pip install --global-option=build_ext --global-option="-I/usr/include/graphviz" --global-option="-L/usr/lib/x86_64-linux-gnu/" --install-option="--library-path=/usr/lib/x86_64-linux-gnu/graphviz" pygraphviz
       - name: Run tox targets for ${{ matrix.python-version }}
         run: |
           source venv/bin/activate
