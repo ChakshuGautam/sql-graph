@@ -4,8 +4,8 @@ Enable SQL to be managed as a graph.
 Use Cases
 - [x] Convert SQL Schema to a Graph.
 - [x] Print the graph as a PNG for debugging
-- [ ] Convert Graph to SQL.
-- [ ] Create a subset of a SQL Schema.
+- [x] Convert Graph to SQL.
+- [x] Create a subset of a SQL Schema.
 - [ ] Allow for adding additonal metadata - augmenting/enriching SQL schema.
 - [ ] Supporting multiple SQL flavours.
 
